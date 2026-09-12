@@ -392,7 +392,15 @@ class JobViewSet(ReadAndDeleteOnlyViewSet, SerializerActionMixin):
         """
         user = self.request.user
         logger.info(f"user: {user} request the jobs with params: {self.request.query_params}")
-        return Job.objects.visible_for_user(user).order_by("-received_request_time")
+        queryset = Job.objects.visible_for_user(user).order_by("-received_request_time")
+        if self.action == "list":
+            queryset = queryset.select_related("analyzable", "user", "playbook_to_execute").prefetch_related(
+                "tags",
+                "analyzers_to_execute",
+                "connectors_to_execute",
+                "visualizers_to_execute",
+            )
+        return queryset
 
     @action(detail=False, methods=["post"])
     def recent_scans(self, request):

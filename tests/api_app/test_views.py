@@ -7,7 +7,9 @@ from zoneinfo import ZoneInfo
 
 from django.contrib.auth import get_user_model
 from django.core.files import File
+from django.db import connection
 from django.test import override_settings
+from django.test.utils import CaptureQueriesContext
 from django.utils.timezone import now
 from elasticsearch_dsl.query import Bool, Exists, Range, Term
 from rest_framework.reverse import reverse
@@ -239,6 +241,37 @@ class JobViewSetTests(CustomViewSetTestCase):
         self.assertIn("count", content, msg=msg)
         self.assertIn("total_pages", content, msg=msg)
         self.assertIn("results", content, msg=msg)
+
+    def test_list_query_count_does_not_grow_per_job(self):
+        max_queries_per_extra_job = 3
+
+        def is_application_query(query):
+            return not query["sql"].startswith("EXPLAIN") and "silk_" not in query["sql"]
+
+        def count_queries():
+            with CaptureQueriesContext(connection) as ctx:
+                response = self.client.get(self.jobs_list_uri)
+                self.assertEqual(200, response.status_code)
+            return len([q for q in ctx.captured_queries if is_application_query(q)])
+
+        count_queries()
+        small = count_queries()
+        added = 5
+        for _ in range(added):
+            Job.objects.create(
+                user=self.superuser,
+                analyzable=self.analyzable,
+                playbook_to_execute=PlaybookConfig.objects.get(name="Dns"),
+                tlp=Job.TLP.CLEAR.value,
+            )
+        large = count_queries()
+
+        self.assertLessEqual(
+            (large - small) / added,
+            max_queries_per_extra_job,
+            f"GET /api/jobs/ costs {(large - small) / added:.2f} queries per extra job "
+            f"({small} -> {large}); a relation read by JobListSerializer is missing from get_queryset",
+        )
 
     def test_list_filter_observable(self):
         response = self.client.get(self.jobs_list_uri, {"is_sample": False})
